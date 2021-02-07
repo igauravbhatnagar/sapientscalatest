@@ -2,16 +2,12 @@ package org.example
 
 import com.typesafe.config.{Config, ConfigFactory}
 import org.apache.log4j.{Level, Logger}
-import org.apache.spark.sql.catalyst.dsl.expressions.StringToAttributeConversionHelper
-import org.apache.spark.sql.{Column, SparkSession}
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.expressions.Window
-import org.apache.spark.sql.functions.{when, _}
-import org.apache.spark.sql.types.{LongType, TimestampType}
+import org.apache.spark.sql.functions._
 
-
-
-import java.time.{LocalDate, LocalDateTime}
 import java.time.format.DateTimeFormatter
+import java.time.{LocalDate, LocalDateTime}
 
 
 
@@ -28,7 +24,6 @@ object question1 extends App {
   // Spark configs and initial variables
   ///////////////////////////////////////////////
   val configs: Config = ConfigFactory.load("properties.conf")
-  import spark.implicits._
 
   // Read Input Data (lazy)
   val inputFileQ1 = configs.getString("paths.q1data")
@@ -82,17 +77,19 @@ object question1 extends App {
   val formattedDF2 = UserDefinedFunctions.changeColType(inpDF2,"timestamp","Timestamp")
 
   val windowSpec = Window.partitionBy("userid").orderBy("timestamp")
-  val lagWindowOverTs = lag(col("timestamp"), 1).over(windowSpec)
-  val lagRunningWindowOverSession = lag((col("session_id")), 1).over(windowSpec)
-  val inputDf2WithPreviousTimestamp= formattedDF2.withColumn("prev_timestamp",lagWindowOverTs)
-  val inputDf2WithPreviousTimestampAndDuration = inputDf2WithPreviousTimestamp
-                                                   .withColumn("duration",UserDefinedFunctions.sessionDuration(unix_timestamp(col("timestamp")),unix_timestamp(col("prev_timestamp"))).cast("Int"))
-                                                   .drop("prev_timestamp").na.fill(Map("duration" -> 0))
+  val LeadWindowOverTs = lead(col("timestamp"), 1).over(windowSpec)
+//  val LeadRunningWindowOverSession = lag((col("session_id")), 1).over(windowSpec)
+  val inputDf2WithNextTimestamp= formattedDF2.withColumn("next_timestamp",LeadWindowOverTs)
+  inputDf2WithNextTimestamp.printSchema()
+  inputDf2WithNextTimestamp.show()
+  val inputDf2WithNextTimestampAndDuration = inputDf2WithNextTimestamp
+                                                   .withColumn("duration",UserDefinedFunctions.sessionDuration(unix_timestamp(col("timestamp")),unix_timestamp(col("next_timestamp"))))
+                                                   .drop("next_timestamp").na.fill(Map("duration" -> 0))
                                                    .select("userid","timestamp","duration")
   //Persist
-  inputDf2WithPreviousTimestampAndDuration.persist()
+  inputDf2WithNextTimestampAndDuration.persist()
 
-  val inputDf2WithSessionId = inputDf2WithPreviousTimestampAndDuration.withColumn("session_id",UserDefinedFunctions.assignSessionId(col("duration")) )
+  val inputDf2WithSessionId = inputDf2WithNextTimestampAndDuration.withColumn("session_id",UserDefinedFunctions.assignSessionId(col("duration")) )
 
   println("---Solution 2---")
   val q2SolutionDf = inputDf2WithSessionId.drop("duration")
@@ -105,7 +102,7 @@ object question1 extends App {
   // Logic for Solution 3
   ////////////////////////////////////
   println("---Solution 3---")
-  inputDf2WithPreviousTimestampAndDuration.show(false)
+  inputDf2WithNextTimestampAndDuration.show(false)
 
   //Number of sessions generated in a day.
 //  val totalSessionsGeneratedInADay = q2SolutionDf.groupBy(col("userid"),col("session_id")).count()
@@ -113,21 +110,21 @@ object question1 extends App {
 //  val CountOfSessionsGeneratedInADay = q2SolutionDf.dropDuplicates("userid","session_id").count()
 //  println(s"Count of Sessions Generated in a Day (Sol-3-a): $CountOfSessionsGeneratedInADay")
 
-  val q3SolutionDf = inputDf2WithPreviousTimestampAndDuration
-                     .withColumn("event_year",to_date(col("timestamp"),"fmtYear"))
-                     .withColumn("event_month",to_date(col("timestamp"),"fmtMonth"))
-                     .withColumn("event_day",to_date(col("timestamp"),"fmtDay"))
+  val q3SolutionDf = inputDf2WithNextTimestampAndDuration
+                     .withColumn("event_year",year(col("timestamp")))
+                     .withColumn("event_month",month(col("timestamp")))
+                     .withColumn("event_day",dayofmonth(col("timestamp")))
+  q3SolutionDf.show()
 
-  inputDf2WithPreviousTimestamp.show()
   //Total time spent by a user in a day
 
   //Total time spent by a user over a month.
 
 
   //Un-persist
-  inputDf2WithPreviousTimestampAndDuration.unpersist()
+  inputDf2WithNextTimestampAndDuration.unpersist()
 
-
+spark.stop()
 
 
 
