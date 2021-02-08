@@ -11,7 +11,7 @@ import java.time.{LocalDate, LocalDateTime}
 
 
 
-object question1 extends App {
+object SapientAssessmentQs extends App {
   // /////////////////////////////////////////////
   // Spark Session
   ///////////////////////////////////////////////
@@ -41,10 +41,6 @@ object question1 extends App {
     .option("header", true)
     .csv(s"$inputFileQ2")
 
-  /*val inpDF3 = spark.read
-      .option("header",true)
-      .csv(s"$inputFileQ3")*/
-
   // Logger
   val rootLogger = Logger.getRootLogger
   rootLogger.setLevel(Level.ERROR)
@@ -61,7 +57,6 @@ object question1 extends App {
   val formattedDate = dateToday.format(DateTimeFormatter.ofPattern("ddMMYYYY"))
   val formattedTime=  TimeToday.format(DateTimeFormatter.ofPattern("YYYY-MM-dd HH:mm:ss"))
   val tsFormat: String = "2018-01-01T12:15:00Z"
-//  val formattedTime1= tsFormat.format(DateTimeFormatter.ofPattern(s"$TimeStampFormat"))
 
   ////////////////////////////////////
   // Logic for Solution 1
@@ -70,29 +65,29 @@ object question1 extends App {
   println("---Solution 1---")
   inpDF1.dropDuplicates("Name", "Age").show()
 
-
   ////////////////////////////////////
   // Logic for Solution 2
   ////////////////////////////////////
   val formattedDF2 = UserDefinedFunctions.changeColType(inpDF2,"timestamp","Timestamp")
 
   val windowSpec = Window.partitionBy("userid").orderBy("timestamp")
-  val LeadWindowOverTs = lead(col("timestamp"), 1).over(windowSpec)
-//  val LeadRunningWindowOverSession = lag((col("session_id")), 1).over(windowSpec)
-  val inputDf2WithNextTimestamp= formattedDF2.withColumn("next_timestamp",LeadWindowOverTs)
-  inputDf2WithNextTimestamp.printSchema()
-  inputDf2WithNextTimestamp.show()
-  val inputDf2WithNextTimestampAndDuration = inputDf2WithNextTimestamp
-                                                   .withColumn("duration",UserDefinedFunctions.sessionDuration(unix_timestamp(col("timestamp")),unix_timestamp(col("next_timestamp"))))
-                                                   .drop("next_timestamp").na.fill(Map("duration" -> 0))
-                                                   .select("userid","timestamp","duration")
-  //Persist
-  inputDf2WithNextTimestampAndDuration.persist()
+  val lagWindowOverTs = lag(col("timestamp"), 1).over(windowSpec)
 
-  val inputDf2WithSessionId = inputDf2WithNextTimestampAndDuration.withColumn("session_id",UserDefinedFunctions.assignSessionId(col("duration")) )
+//  val inputDf2WithPrevTimestamp= formattedDF2.withColumn("prev_timestamp",lagWindowOverTs)
+
+  val inputDf2WithDurationAndSessionId = formattedDF2
+                                         .withColumn("prev_timestamp",lagWindowOverTs)
+                                         .withColumn("duration",(unix_timestamp(col("timestamp"))-unix_timestamp(col("prev_timestamp")))/60)
+                                         .withColumn("isNewSession",when(col("duration") < 30, lit(0)).otherwise(lit(1)))
+                                         .withColumn("session_id",concat(lit("Session"),sum("isNewSession") over windowSpec))
+                                         .na.fill(Map("duration" -> 0.0))
+                                         .withColumn("session_dur",when(col("duration") === 0.0,30)
+                                          .otherwise(5) )
+                                         .select("userid","timestamp","duration","session_id","session_dur")
+
 
   println("---Solution 2---")
-  val q2SolutionDf = inputDf2WithSessionId.drop("duration")
+  val q2SolutionDf = inputDf2WithDurationAndSessionId.drop("duration")
   q2SolutionDf.write.mode("overwrite").parquet(outputLocQ2)
   q2SolutionDf.show(false)
   println(s"---The output to Sol2 has been written to $outputLocQ2---")
@@ -102,27 +97,39 @@ object question1 extends App {
   // Logic for Solution 3
   ////////////////////////////////////
   println("---Solution 3---")
-  inputDf2WithNextTimestampAndDuration.show(false)
+  inputDf2WithDurationAndSessionId.show(false)
 
-  //Number of sessions generated in a day.
-//  val totalSessionsGeneratedInADay = q2SolutionDf.groupBy(col("userid"),col("session_id")).count()
-//  val CountOfSessionsGeneratedInADay = q2SolutionDf.drop(col("timestamp")).distinct().count()
-//  val CountOfSessionsGeneratedInADay = q2SolutionDf.dropDuplicates("userid","session_id").count()
-//  println(s"Count of Sessions Generated in a Day (Sol-3-a): $CountOfSessionsGeneratedInADay")
-
-  val q3SolutionDf = inputDf2WithNextTimestampAndDuration
-                     .withColumn("event_year",year(col("timestamp")))
-                     .withColumn("event_month",month(col("timestamp")))
-                     .withColumn("event_day",dayofmonth(col("timestamp")))
+  val q3SolutionDf = inputDf2WithDurationAndSessionId
+    .withColumn("event_year",year(col("timestamp")))
+    .withColumn("event_month",month(col("timestamp")))
+    .withColumn("event_day",dayofmonth(col("timestamp")))
   q3SolutionDf.show()
 
+  //Register Q3 dataframe as temporary table
+  q3SolutionDf.createOrReplaceTempView("q3SolutionDf")
+
+
+  //Number of sessions generated in a day.
+  val countOfSessionsGeneratedInADay = spark.sql("SELECT COUNT(DISTINCT(userid,session_id)) " +
+    "FROM q3SolutionDf " +
+    "WHERE event_year = 2018 " +
+    "AND event_month = 1 " +
+    "AND event_day = 1").collect()(0)(0)
+
+  println("Total sessions generated in a day: " + countOfSessionsGeneratedInADay )
   //Total time spent by a user in a day
+
+/*  val timeSpentByAUserInADay = spark.sql("SELECT userid,SUM(duration) " +
+    "FROM q3SolutionDf " +
+    "WHERE event_year = 2018 " +
+    "AND event_month = 1 " +
+    "AND event_day = 1")*/
 
   //Total time spent by a user over a month.
 
 
   //Un-persist
-  inputDf2WithNextTimestampAndDuration.unpersist()
+//  inputDf2WithPrevTimestampAndDuration.unpersist()
 
 spark.stop()
 
