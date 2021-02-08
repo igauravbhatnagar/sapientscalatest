@@ -72,22 +72,28 @@ object SapientAssessmentQs extends App {
 
   val windowSpec = Window.partitionBy("userid").orderBy("timestamp")
   val lagWindowOverTs = lag(col("timestamp"), 1).over(windowSpec)
+  val leadWindowOverTs = lead(col("timestamp"), 1).over(windowSpec)
 
 //  val inputDf2WithPrevTimestamp= formattedDF2.withColumn("prev_timestamp",lagWindowOverTs)
 
   val inputDf2WithDurationAndSessionId = formattedDF2
                                          .withColumn("prev_timestamp",lagWindowOverTs)
+                                         .withColumn("next_timestamp",leadWindowOverTs)
                                          .withColumn("duration",(unix_timestamp(col("timestamp"))-unix_timestamp(col("prev_timestamp")))/60)
+                                         .withColumn("temp_diff",(unix_timestamp(col("next_timestamp"))-unix_timestamp(col("timestamp")))/60)
                                          .withColumn("isNewSession",when(col("duration") < 30, lit(0)).otherwise(lit(1)))
                                          .withColumn("session_id",concat(lit("Session"),sum("isNewSession") over windowSpec))
-                                         .na.fill(Map("duration" -> 0.0))
-                                         .withColumn("session_dur",when(col("duration") === 0.0,30)
-                                          .otherwise(5) )
-                                         .select("userid","timestamp","duration","session_id","session_dur")
+                                         .na.fill(Map("duration" -> 0.0,"temp_diff" -> 0.0))
+                                         .withColumn("time_spent",
+                                            when(col("temp_diff") > 30, lit(30.0))
+                                           .when(col("temp_diff") === 0.0, lit(30.0))
+                                           .when(col("temp_diff") < 30, col("temp_diff"))
+                                           )
+                                         .select("userid","timestamp","time_spent","session_id")
 
 
   println("---Solution 2---")
-  val q2SolutionDf = inputDf2WithDurationAndSessionId.drop("duration")
+  val q2SolutionDf = inputDf2WithDurationAndSessionId.drop("time_spent")
   q2SolutionDf.write.mode("overwrite").parquet(outputLocQ2)
   q2SolutionDf.show(false)
   println(s"---The output to Sol2 has been written to $outputLocQ2---")
@@ -100,10 +106,11 @@ object SapientAssessmentQs extends App {
   inputDf2WithDurationAndSessionId.show(false)
 
   val q3SolutionDf = inputDf2WithDurationAndSessionId
+    .drop()
     .withColumn("event_year",year(col("timestamp")))
     .withColumn("event_month",month(col("timestamp")))
     .withColumn("event_day",dayofmonth(col("timestamp")))
-  q3SolutionDf.show()
+  q3SolutionDf.show()                      // save this table with partitions event_year,event_month,event_day
 
   //Register Q3 dataframe as temporary table
   q3SolutionDf.createOrReplaceTempView("q3SolutionDf")
@@ -116,17 +123,27 @@ object SapientAssessmentQs extends App {
     "AND event_month = 1 " +
     "AND event_day = 1").collect()(0)(0)
 
-  println("Total sessions generated in a day: " + countOfSessionsGeneratedInADay )
+  println("Total sessions generated on 2018/01/01: " + countOfSessionsGeneratedInADay )
   //Total time spent by a user in a day
 
-/*  val timeSpentByAUserInADay = spark.sql("SELECT userid,SUM(duration) " +
+  val timeSpentByAUserInADay = spark.sql("SELECT SUM(time_spent) " +
     "FROM q3SolutionDf " +
-    "WHERE event_year = 2018 " +
+    "WHERE userid = 'u1' " +
+    "AND event_year = 2018 " +
     "AND event_month = 1 " +
-    "AND event_day = 1")*/
+    "AND event_day = 1"
+  ).collect()(0)(0)
+
+  println("Total time spent by user u1 on 2018/01/01: " + timeSpentByAUserInADay  + " mins")
 
   //Total time spent by a user over a month.
+  val timeSpentByAUserInAMonth = spark.sql("SELECT SUM(time_spent) " +
+    "FROM q3SolutionDf " +
+    "WHERE userid = 'u2' " +
+    "AND event_month = 1 "
+  ).collect()(0)(0)
 
+  println("Total time spent by user u2 in the month of January: " + timeSpentByAUserInAMonth  + " mins")
 
   //Un-persist
 //  inputDf2WithPrevTimestampAndDuration.unpersist()
